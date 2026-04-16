@@ -1,0 +1,2 @@
+add_executable(StressClient StressClient.cpp)
+target_link_libraries(StressClient pthread)
