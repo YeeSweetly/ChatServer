@@ -138,10 +138,10 @@ ssize_t writen(int fd, std::string &sbuff) {
     nleft -= nwritten;
     ptr += nwritten;
   }
-  if (writeSum == static_cast<int>(sbuff.size()))
+  if (writeSum == (ssize_t)sbuff.size())
     sbuff.clear();
   else
-    sbuff = sbuff.substr(writeSum);
+    sbuff.erase(0, writeSum);     // erase 仍是 O(N) 移动，但省掉了内存分配
   return writeSum;
 }
 

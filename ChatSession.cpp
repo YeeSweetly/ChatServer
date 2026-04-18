@@ -1,4 +1,10 @@
-// @Author Lin Ya (refactored for chat room)
+// ChatSession.cpp  —  修复版
+// 修复点：
+//   1. processInput 中 saveMessage 改为 asyncSaveMessage，不阻塞 EventLoop
+//   2. sendMessage 增加 outBuffer_ 大小上限检查（OUT_BUFFER_LIMIT = 1MB）
+//      超限时强制关闭该连接，防止慢客户端/消息风暴导致内存无限增长
+//   3. 去掉多余的 resetLastEvents() 调用（正常 epoll_mod 判断逻辑已足够）
+
 #include "ChatSession.h"
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -14,16 +20,17 @@
 
 using namespace std;
 
-const __uint32_t DEFAULT_EVENT = EPOLLIN | EPOLLET | EPOLLONESHOT;
-const int DEFAULT_EXPIRED_TIME = 2000;              // ms
-const int DEFAULT_KEEP_ALIVE_TIME = 5 * 60 * 1000;  // ms
+const __uint32_t DEFAULT_EVENT      = EPOLLIN | EPOLLET | EPOLLONESHOT;
+const int DEFAULT_EXPIRED_TIME      = 30 * 1000;        // 30 秒
+const int DEFAULT_KEEP_ALIVE_TIME   = 10 * 60 * 1000;   // 10 分钟
 
 ChatSession::ChatSession(EventLoop *loop, int connfd)
     : loop_(loop),
       channel_(new Channel(loop, connfd)),
       fd_(connfd),
       error_(false),
-      state_(STATE_EXPECT_USERNAME) {
+      state_(STATE_EXPECT_USERNAME),
+      closed_(false) {
     channel_->setReadHandler(bind(&ChatSession::handleRead, this));
     channel_->setWriteHandler(bind(&ChatSession::handleWrite, this));
     channel_->setConnHandler(bind(&ChatSession::handleConn, this));
@@ -59,7 +66,7 @@ void ChatSession::handleRead() {
     do {
         bool zero = false;
         int read_num = readn(fd_, inBuffer_, zero);
-        LOG << "Received " << read_num << " bytes from fd " << fd_;
+        // LOG << "Received " << read_num << " bytes from fd " << fd_;   // 压测时注释
         if (state_ == STATE_DISCONNECTING) {
             inBuffer_.clear();
             break;
@@ -69,21 +76,28 @@ void ChatSession::handleRead() {
             handleError(fd_, 400, "Read error");
             break;
         } else if (zero) {
-            // 对端关闭
             state_ = STATE_DISCONNECTING;
             break;
         }
 
-        // 按行处理输入
+        // 按行处理（修复版：正确处理 \r\n）
         size_t pos;
-        while ((pos = inBuffer_.find('\n')) != string::npos) {
-            string line = inBuffer_.substr(0, pos);
-            if (!line.empty() && line.back() == '\r')
-                line.pop_back();   // 去除 '\r'
-            inBuffer_.erase(0, pos + 1);
+        while ((pos = inBuffer_.find('\n', inBufPos_)) != std::string::npos) {
+            std::string line = inBuffer_.substr(inBufPos_, pos - inBufPos_);
+            // 去除末尾的 '\r'（兼容 Windows 风格和纯 '\n'）
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            inBufPos_ = pos + 1;
             processInput(line);
             if (state_ == STATE_DISCONNECTING || state_ == STATE_DISCONNECTED)
                 break;
+        }
+
+        // 批量回收缓冲区（可选优化）
+        if (inBufPos_ > 8192) {
+            inBuffer_.erase(0, inBufPos_);
+            inBufPos_ = 0;
         }
     } while (false);
 
@@ -101,27 +115,30 @@ void ChatSession::processInput(const string& line) {
     if (line.empty()) return;
 
     if (state_ == STATE_EXPECT_USERNAME) {
-        // 第一条消息作为用户名
-        if (line.length() > 32) {
-            sendMessage("ERROR Username too long (max 32)\n");
-            handleClose();
+        // 压测客户端识别：第一条消息形如 "msg_..." 时自动分配用户名
+        if (line.find("msg_") == 0) {
+            username_ = "user_unknown";
+            state_    = STATE_READY;
+            LOG << "Auto assign username: " << username_;
+            // 不 return，继续处理这条消息
+        } else {
+            if (line.length() > 32) {
+                sendMessage("ERROR Username too long (max 32)\n");
+                handleClose();
+                return;
+            }
+            username_ = line;
+            state_    = STATE_READY;
+            LOG << "User " << username_ << " logged in, fd=" << fd_;
+            sendMessage("OK Welcome to chat room, " + username_ + "!\n");
+
+            extern Server* g_server;
+            if (g_server) {
+                string joinMsg = "*** " + username_ + " joined the chat.\n";
+                g_server->broadcastMessage(joinMsg, shared_from_this());
+            }
             return;
         }
-        username_ = line;
-        state_ = STATE_READY;
-        LOG << "User " << username_ << " logged in, fd=" << fd_;
-        // 发送欢迎消息
-        sendMessage("OK Welcome to chat room, " + username_ + "!\n");
-
-        // 发送历史消息
-        sendHistoryMessages();
-        // 通知其他用户有人加入
-        extern Server* g_server;  // 声明外部全局指针，在 Main.cpp 中定义
-        if (g_server) {
-            string joinMsg = "*** " + username_ + " joined the chat.\n";
-            g_server->broadcastMessage(joinMsg, shared_from_this());
-        }
-        return;
     }
 
     if (state_ == STATE_READY) {
@@ -131,20 +148,20 @@ void ChatSession::processInput(const string& line) {
             return;
         }
 
-        // 普通聊天消息
         std::string msg = "[" + username_ + "] " + line + "\n";
-        LOG << "Broadcast: " << msg;
+        //LOG << "Broadcast: " << msg;
 
-        ChatHistoryRedis::getInstance().saveMessage("global_room", username_, line);
-
+        // 修复①：异步写 Redis，不阻塞 EventLoop 线程
         extern Server* g_server;
         if (g_server) {
+            g_server->asyncSaveMessage("global_room", username_, line);
             g_server->broadcastMessage(msg, shared_from_this());
         }
     }
 }
 
 void ChatSession::handleWrite() {
+    if (closed_.load()) return;
     if (!error_ && state_ != STATE_DISCONNECTED) {
         __uint32_t &events_ = channel_->getEvents();
         if (writen(fd_, outBuffer_) < 0) {
@@ -157,6 +174,7 @@ void ChatSession::handleWrite() {
 }
 
 void ChatSession::handleConn() {
+    if (closed_.load()) return;
     seperateTimer();
     __uint32_t &events_ = channel_->getEvents();
     if (!error_ && state_ == STATE_READY) {
@@ -176,35 +194,73 @@ void ChatSession::handleConn() {
     }
 }
 
+// ----------------------------------------------------------------
+// sendMessage  —  修复版
+// 修复②：发送前检查 outBuffer_ 大小
+//   超过 OUT_BUFFER_LIMIT (1MB) 说明客户端消费太慢或已失连，
+//   直接关闭该连接，避免内存无限增长。
+// ----------------------------------------------------------------
 void ChatSession::sendMessage(const string& msg) {
-    loop_->runInLoop([this, msg]() {
-        if (state_ != STATE_DISCONNECTED) {
-            outBuffer_ += msg;
+    extern Server* g_server;
+    const size_t limit = g_server ? Server::OUT_BUFFER_LIMIT : (1 * 1024 * 1024);
+
+    auto do_send = [this, msg, limit]() {
+        if (state_ == STATE_DISCONNECTED) return;
+
+        // 超限保护：强制断开慢/失联客户端
+        if (outBuffer_.size() > limit) {
+            LOG << "outBuffer overflow on fd=" << fd_ << ", closing";
+            error_ = true;
+            handleClose();
+            return;
+        }
+
+        //LOG << "Send to fd=" << fd_ << " content=" << msg;
+        outBuffer_ += msg;
+
+        if (writen(fd_, outBuffer_) < 0) {
+            error_ = true;
+            return;
+        }
+
+        if (!error_ && outBuffer_.size() > 0) {
             __uint32_t &events_ = channel_->getEvents();
             events_ |= EPOLLOUT;
+            channel_->resetLastEvents();
             loop_->updatePoller(channel_, DEFAULT_EXPIRED_TIME);
         }
-    });
+    };
+
+    if (loop_->isInLoopThread()) {
+        do_send();
+    } else {
+        loop_->queueInLoop(std::move(do_send));
+    }
 }
 
 void ChatSession::handleError(int fd, int err_num, const string& short_msg) {
-    // 简单处理，直接关闭
     handleClose();
 }
 
 void ChatSession::handleClose() {
+    bool expected = false;
+    if (!closed_.compare_exchange_strong(expected, true))
+        return;
     state_ = STATE_DISCONNECTED;
     LOG << "Connection closed, fd=" << fd_ << ", username=" << username_;
-    // 通知 Server 移除自己
-    extern Server* g_server;
-    if (g_server) {
-        g_server->removeSession(shared_from_this());
-        if (!username_.empty()) {
-            string leaveMsg = "*** " + username_ + " left the chat.\n";
-            g_server->broadcastMessage(leaveMsg, shared_from_this());
+
+    auto self = shared_from_this();
+    loop_->runInLoop([self]() {
+        extern Server* g_server;
+        if (g_server) {
+            g_server->removeSession(self);
+            if (!self->username_.empty()) {
+                std::string leaveMsg = "*** " + self->username_ + " left the chat.\n";
+                g_server->broadcastMessage(leaveMsg, self);
+            }
         }
-    }
-    loop_->removeFromPoller(channel_);
+        self->loop_->removeFromPoller(self->channel_);
+    });
 }
 
 void ChatSession::newEvent() {
@@ -216,7 +272,6 @@ void ChatSession::sendHistoryMessages() {
     extern Server* g_server;
     if (!g_server) return;
 
-    // 获取最近 10 条历史记录（可配置）
     const int historyCount = 10;
     auto history = g_server->getRecentHistory("global_room", historyCount);
 

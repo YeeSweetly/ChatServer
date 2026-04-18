@@ -42,12 +42,12 @@ void ThreadPool::stop() {
     }
 }
 
+// 改为 try-enqueue，满了就直接丢弃（历史写入丢失可以接受，不能阻塞 EventLoop）：
 bool ThreadPool::addTask(Task&& task) {
     MutexLockGuard lock(mutex_);
-    while (running_ && taskQueue_.size() >= static_cast<size_t>(queueSize_)) {
-        notFull_.wait();
+    if (!running_ || taskQueue_.size() >= static_cast<size_t>(queueSize_)) {
+        return false;   // 满了直接返回，不阻塞
     }
-    if (!running_) return false;
     taskQueue_.push(std::move(task));
     notEmpty_.notify();
     return true;

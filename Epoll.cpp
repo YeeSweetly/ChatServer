@@ -51,8 +51,10 @@ void Epoll::epoll_mod(SP_Channel request, int timeout) {
     event.data.fd = fd;
     event.events = request->getEvents();
     if (epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &event) < 0) {
-      perror("epoll_mod error");
-      fd2chan_[fd].reset();
+      if (errno != ENOENT)   // 忽略 "No such file or directory"
+        perror("epoll_mod error");
+      else
+        fd2chan_[fd].reset();   // 清理本地记录
     }
   }
 }

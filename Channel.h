@@ -90,6 +90,9 @@ class Channel {
     return ret;
   }
 
+  // 强制重置，使下次 epoll_mod 一定调用 epoll_ctl（用于跨线程投递写事件后）
+  void resetLastEvents() { lastEvents_ = 0; }
+
   __uint32_t getLastEvents() { return lastEvents_; }
 };
 

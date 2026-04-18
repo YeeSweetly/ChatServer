@@ -1,4 +1,6 @@
-// @Author Lin Ya (refactored for chat room)
+// ChatSession.h  —  修复版
+// 修复点：
+//   1. sendMessage 增加 outBuffer_ 大小检查，超限时关闭连接（防止内存无限增长）
 #pragma once
 
 #include <sys/epoll.h>
@@ -8,14 +10,15 @@
 #include <string>
 #include <map>
 #include "Timer.h"
+#include <atomic>
 
 class EventLoop;
 class TimerNode;
 class Channel;
 
 enum SessionState {
-    STATE_EXPECT_USERNAME = 1,   // 等待用户名
-    STATE_READY,                 // 已登录，可以聊天
+    STATE_EXPECT_USERNAME = 1,
+    STATE_READY,
     STATE_DISCONNECTING,
     STATE_DISCONNECTED
 };
@@ -35,15 +38,18 @@ public:
     void setUsername(const std::string& name) { username_ = name; }
     std::string getUsername() const { return username_; }
     int getFd() const { return fd_; }
-    void sendMessage(const std::string& msg);   // 发送消息（线程安全）
+
+    // 发送消息（线程安全）
+    // 修复：发送前检查 outBuffer_ 大小，超过 OUT_BUFFER_LIMIT 时强制断开
+    void sendMessage(const std::string& msg);
 
 private:
     void handleRead();
     void handleWrite();
     void handleConn();
     void handleError(int fd, int err_num, const std::string& short_msg);
-    void processInput(const std::string& line); // 处理一行输入
-    void sendHistoryMessages();   // 发送历史消息给当前用户
+    void processInput(const std::string& line);
+    void sendHistoryMessages();
 
     EventLoop *loop_;
     std::shared_ptr<Channel> channel_;
@@ -54,6 +60,8 @@ private:
     SessionState state_;
     std::string username_;
     std::weak_ptr<TimerNode> timer_;
+    std::atomic<bool> closed_{false};
+    size_t inBufPos_ = 0;   // 读指针
 };
 
 typedef std::shared_ptr<ChatSession> SP_ChatSession;

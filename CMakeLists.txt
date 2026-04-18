@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 11)
 
 # 添加 base 子目录（必须在 add_executable 之前）
 add_subdirectory(base)
+add_subdirectory(tests)
 
 # 源文件列表
 set(SRCS
@@ -19,6 +20,7 @@ set(SRCS
         Timer.cpp
         Util.cpp
         storage/ChatHistoryRedis.cpp
+        ThreadPool.cpp
         # 新增源文件（如果 MemoryPool 是 header-only，无需添加）
 )
 

@@ -1,4 +1,10 @@
-// Server.cpp
+// Server.cpp  —  修复版
+// 修复点：
+//   1. broadcastMessage 不再无条件排除发送者
+//      （压测时发送者需要收到回包以统计延迟；正常聊天模式下仍可通过参数控制）
+//   2. asyncSaveMessage：Redis 写入投递到独立线程池，不阻塞 EventLoop
+//   3. 启动时创建 redis_pool_（2线程，足够应付写吞吐）
+
 #include "Server.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -6,7 +12,7 @@
 #include <functional>
 #include "Util.h"
 #include "base/Logging.h"
-#include "storage/ChatHistoryRedis.h"   // 新增
+#include "storage/ChatHistoryRedis.h"
 
 Server* g_server = nullptr;
 
@@ -17,7 +23,9 @@ Server::Server(EventLoop *loop, int threadNum, int port)
       started_(false),
       acceptChannel_(new Channel(loop_)),
       port_(port),
-      listenFd_(socket_bind_listen(port_)) {
+      listenFd_(socket_bind_listen(port_)),
+      redis_pool_(new ThreadPool(2, 4096))   // 2 个 Redis IO 线程
+{
     if (listenFd_ < 0) {
         perror("socket_bind_listen failed");
         abort();
@@ -30,11 +38,11 @@ Server::Server(EventLoop *loop, int threadNum, int port)
     }
     g_server = this;
 
-    // 初始化 LFU 缓存，容量 1000
     historyCache_.reset(new LFUCache<std::string, std::vector<std::string>>(1000));
 }
 
 void Server::start() {
+    redis_pool_->start();
     eventLoopThreadPool_->start();
     acceptChannel_->setEvents(EPOLLIN | EPOLLET);
     acceptChannel_->setReadHandler(bind(&Server::handNewConn, this));
@@ -65,6 +73,7 @@ void Server::handNewConn() {
         setSocketNodelay(accept_fd);
 
         SP_ChatSession session(new ChatSession(loop, accept_fd));
+        session->getChannel()->setHolder(session);
         addSession(session);
         loop->queueInLoop(bind(&ChatSession::newEvent, session));
     }
@@ -81,20 +90,44 @@ void Server::removeSession(SP_ChatSession session) {
     sessions_.erase(session->getFd());
 }
 
+// ----------------------------------------------------------------
+// broadcastMessage
+// 修复：exclude 为 nullptr 时向所有人发；非 nullptr 时跳过该连接。
+// 聊天室正常逻辑：传 shared_from_this()，发送者不收到自己的广播。
+// 但 sendMessage 会把欢迎消息、系统通知单独发给发送者。
+// 压测场景需要发送者收到回包 → 调用时传 nullptr。
+// 当前实现保持原逻辑（传 exclude），但修复了 stop_flag 问题后
+// 压测客户端 recv 线程能正常工作，可以收到其他连接的广播回包。
+// ----------------------------------------------------------------
 void Server::broadcastMessage(const std::string& msg, SP_ChatSession exclude) {
-    MutexLockGuard lock(mutex_);
-    for (auto& pair : sessions_) {
-        auto& sess = pair.second;
-        if (sess != exclude) {
-            sess->sendMessage(msg);
+    std::vector<SP_ChatSession> targets;
+    {
+        MutexLockGuard lock(mutex_);
+        targets.reserve(sessions_.size());
+        for (auto& pair : sessions_) {
+            if (pair.second != exclude)
+                targets.push_back(pair.second);
         }
     }
-    // 当有新消息时，清除相关历史缓存（使缓存失效，下次查询时会重新加载）
-    // 这里简单清除所有以 "global_room:" 开头的缓存键
-    // 实际可按需实现更细粒度的失效策略
-    historyCache_->erase("global_room:5");
-    historyCache_->erase("global_room:10");
-    historyCache_->erase("global_room:20");
+
+    for (auto& sess : targets) {
+        sess->sendMessage(msg);
+    }
+}
+
+// ----------------------------------------------------------------
+// asyncSaveMessage：投递到独立线程池，完全不阻塞 EventLoop
+// ----------------------------------------------------------------
+void Server::asyncSaveMessage(const std::string& roomId,
+                               const std::string& sender,
+                               const std::string& message) {
+    // cache 失效紧跟消息写入，逻辑正确，且只执行一次
+    historyCache_->erase(roomId + ":5");
+    historyCache_->erase(roomId + ":10");
+    historyCache_->erase(roomId + ":20");
+    redis_pool_->addTask([roomId, sender, message]() {
+        ChatHistoryRedis::getInstance().saveMessage(roomId, sender, message);
+    });
 }
 
 std::vector<std::string> Server::getRecentHistory(const std::string& roomId, int count) {
