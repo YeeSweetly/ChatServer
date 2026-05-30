@@ -3,7 +3,6 @@
 #include "Thread.h"
 #include <assert.h>
 #include <errno.h>
-#include <linux/unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/prctl.h>
@@ -12,6 +11,12 @@
 #include <memory>
 #include "CurrentThread.h"
 
+#ifdef __linux__
+#  ifndef _GNU_SOURCE
+#    define _GNU_SOURCE
+#  endif
+#  include <sys/syscall.h>
+#endif
 
 #include <iostream>
 using namespace std;
@@ -23,7 +28,11 @@ __thread int t_tidStringLength = 6;
 __thread const char* t_threadName = "default";
 }
 
+#ifdef SYS_gettid
 pid_t gettid() { return static_cast<pid_t>(::syscall(SYS_gettid)); }
+#else
+pid_t gettid() { return static_cast<pid_t>(getpid()); }
+#endif
 
 void CurrentThread::cacheTid() {
   if (t_cachedTid == 0) {

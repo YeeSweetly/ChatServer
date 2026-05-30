@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>聊天服务器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 800px;
+            height: 600px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        .status {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .status.online {
+            color: #4ade80;
+        }
+        .chat-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f8fafc;
+        }
+        .message {
+            margin-bottom: 15px;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .system-message {
+            text-align: center;
+            color: #64748b;
+            font-style: italic;
+            font-size: 14px;
+            padding: 5px 0;
+        }
+        .user-message {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        .user-message .username {
+            font-weight: bold;
+            color: #667eea;
+            margin-right: 10px;
+            min-width: 100px;
+        }
+        .user-message .text {
+            color: #1e293b;
+        }
+        .input-area {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e2e8f0;
+        }
+        .input-wrapper {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .login-area {
+            padding: 40px;
+            text-align: center;
+        }
+        .login-area h2 {
+            margin-bottom: 20px;
+            color: #1e293b;
+        }
+        .login-area input {
+            width: 300px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Chat Server</h1>
+            <div class="status" id="status">Not connected</div>
+        </div>
+        
+        <div class="chat-area" id="chatArea">
+            <div class="system-message">Welcome to Chat Server!</div>
+        </div>
+        
+        <div class="input-area" id="inputArea">
+            <div class="login-area" id="loginArea">
+                <h2>Enter Username</h2>
+                <input type="text" id="usernameInput" placeholder="Enter your username..." maxlength="32">
+                <button onclick="login()">Login</button>
+            </div>
+            <div class="input-wrapper" id="messageArea" style="display: none;">
+                <input type="text" id="messageInput" placeholder="Enter message..." onkeypress="handleKeyPress(event)">
+                <button onclick="sendMessage()">Send</button>
+                <button onclick="quit()" style="background: #ef4444;">Quit</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let username = '';
+        let connected = false;
+
+        function addMessage(text, isSystem = false) {
+            const chatArea = document.getElementById('chatArea');
+            const messageDiv = document.createElement('div');
+            
+            if (isSystem) {
+                messageDiv.className = 'system-message';
+                messageDiv.textContent = text;
+            } else {
+                messageDiv.className = 'user-message';
+                const match = text.match(/^\[(.*?)\] (.*)$/);
+                if (match) {
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'username';
+                    nameSpan.textContent = '[' + match[1] + ']';
+                    const textSpan = document.createElement('span');
+                    textSpan.className = 'text';
+                    textSpan.textContent = match[2];
+                    messageDiv.appendChild(nameSpan);
+                    messageDiv.appendChild(textSpan);
+                } else {
+                    messageDiv.className = 'text';
+                    messageDiv.textContent = text;
+                }
+            }
+            
+            chatArea.appendChild(messageDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function updateStatus(text, isOnline = false) {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.className = 'status' + (isOnline ? ' online' : '');
+        }
+
+        async function login() {
+            const input = document.getElementById('usernameInput');
+            username = input.value.trim();
+            
+            if (!username) {
+                alert('Please enter username');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: username })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'OK') {
+                    connected = true;
+                    updateStatus('Connected', true);
+                    addMessage('Login successful!', true);
+                    document.getElementById('loginArea').style.display = 'none';
+                    document.getElementById('messageArea').style.display = 'flex';
+                    document.getElementById('messageInput').focus();
+                    startPolling();
+                } else {
+                    addMessage('Login failed: ' + data.error, true);
+                }
+            } catch (error) {
+                addMessage('Connection failed: ' + error, true);
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || !connected) return;
+
+            addMessage('[' + username + '] ' + message, false);
+
+            try {
+                await fetch('/api/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+            } catch (error) {
+                addMessage('Send failed: ' + error, true);
+            }
+
+            input.value = '';
+        }
+
+        async function quit() {
+            if (!connected) return;
+            
+            try {
+                await fetch('/api/quit', { method: 'POST' });
+            } catch (error) {
+                console.error('Quit failed:', error);
+            }
+            
+            connected = false;
+            updateStatus('Not connected');
+            addMessage('Left chat room', true);
+            document.getElementById('loginArea').style.display = 'block';
+            document.getElementById('messageArea').style.display = 'none';
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                if (!connected) {
+                    login();
+                } else {
+                    sendMessage();
+                }
+            }
+        }
+
+        async function startPolling() {
+            while (connected) {
+                try {
+                    const response = await fetch('/api/messages');
+                    const data = await response.json();
+                    
+                    if (data.messages && data.messages.length > 0) {
+                        data.messages.forEach(message => {
+                            if (message.startsWith('OK ')) {
+                                addMessage(message.substring(3), true);
+                            } else if (message.includes('*** ')) {
+                                addMessage(message, true);
+                            } else if (message.startsWith('[')) {
+                                if (!message.includes('[' + username + ']')) {
+                                    addMessage(message, false);
+                                }
+                            } else {
+                                addMessage(message, false);
+                            }
+                        });
+                    }
+                } catch (error) {
+                    console.error('Get messages failed:', error);
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+    </script>
+</body>
+</html>

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <cstdint>
 #include "Timer.h"
 
 class EventLoop;
@@ -17,9 +18,9 @@ class Channel {
   typedef std::function<void()> CallBack;
   EventLoop *loop_;
   int fd_;
-  __uint32_t events_;
-  __uint32_t revents_;
-  __uint32_t lastEvents_;
+  uint32_t events_;
+  uint32_t revents_;
+  uint32_t lastEvents_;
 
   // 方便找到上层持有该Channel的对象
   std::weak_ptr<ChatSession> holder_;
@@ -79,10 +80,10 @@ class Channel {
   void handleError(int fd, int err_num, std::string short_msg);
   void handleConn();
 
-  void setRevents(__uint32_t ev) { revents_ = ev; }
+  void setRevents(uint32_t ev) { revents_ = ev; }
 
-  void setEvents(__uint32_t ev) { events_ = ev; }
-  __uint32_t &getEvents() { return events_; }
+  void setEvents(uint32_t ev) { events_ = ev; }
+  uint32_t &getEvents() { return events_; }
 
   bool EqualAndUpdateLastEvents() {
     bool ret = (lastEvents_ == events_);
@@ -93,7 +94,7 @@ class Channel {
   // 强制重置，使下次 epoll_mod 一定调用 epoll_ctl（用于跨线程投递写事件后）
   void resetLastEvents() { lastEvents_ = 0; }
 
-  __uint32_t getLastEvents() { return lastEvents_; }
+  uint32_t getLastEvents() { return lastEvents_; }
 };
 
 typedef std::shared_ptr<Channel> SP_Channel;

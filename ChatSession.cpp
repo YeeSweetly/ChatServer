@@ -20,7 +20,7 @@
 
 using namespace std;
 
-const __uint32_t DEFAULT_EVENT      = EPOLLIN | EPOLLET | EPOLLONESHOT;
+const uint32_t DEFAULT_EVENT      = EPOLLIN | EPOLLET | EPOLLONESHOT;
 const int DEFAULT_EXPIRED_TIME      = 30 * 1000;        // 30 秒
 const int DEFAULT_KEEP_ALIVE_TIME   = 10 * 60 * 1000;   // 10 分钟
 
@@ -62,7 +62,7 @@ void ChatSession::seperateTimer() {
 }
 
 void ChatSession::handleRead() {
-    __uint32_t &events_ = channel_->getEvents();
+    uint32_t &events_ = channel_->getEvents();
     do {
         bool zero = false;
         int read_num = readn(fd_, inBuffer_, zero);
@@ -163,7 +163,7 @@ void ChatSession::processInput(const string& line) {
 void ChatSession::handleWrite() {
     if (closed_.load()) return;
     if (!error_ && state_ != STATE_DISCONNECTED) {
-        __uint32_t &events_ = channel_->getEvents();
+        uint32_t &events_ = channel_->getEvents();
         if (writen(fd_, outBuffer_) < 0) {
             error_ = true;
             events_ = 0;
@@ -176,7 +176,7 @@ void ChatSession::handleWrite() {
 void ChatSession::handleConn() {
     if (closed_.load()) return;
     seperateTimer();
-    __uint32_t &events_ = channel_->getEvents();
+    uint32_t &events_ = channel_->getEvents();
     if (!error_ && state_ == STATE_READY) {
         if (events_ != 0) {
             int timeout = DEFAULT_EXPIRED_TIME;
@@ -224,7 +224,7 @@ void ChatSession::sendMessage(const string& msg) {
         }
 
         if (!error_ && outBuffer_.size() > 0) {
-            __uint32_t &events_ = channel_->getEvents();
+            uint32_t &events_ = channel_->getEvents();
             events_ |= EPOLLOUT;
             channel_->resetLastEvents();
             loop_->updatePoller(channel_, DEFAULT_EXPIRED_TIME);
